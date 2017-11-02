@@ -1,8 +1,7 @@
-# akka-actor如何最大化利用单台机器上的硬件资源
->这次给大家分享一下使用akka的actor如何最大化利用单台机器上的硬件资源。<br/>
-根据摩尔定律，每隔大约18个月，cpu每一单位面积的晶体管数量就会增加一倍，也就是cpu时钟速度增加一倍。<br/>
-不过如今已经今非其比了，越来越多的cpu以多核来吸引眼球，多核时代早已到来。<br/>
-所以要最大化利用单台机器上的硬件资源，其中很重要的一点就是榨干机器上的cpu资源。<br/>
+# akka-actor之性能优化
+>这次给大家分享一下akka-actor如何进行性能优化，以达到最大化利用单台机器上的硬件资源的目的。<br/>
+当今，处理器早已步入多核时代。<br/>
+所以要最大化利用单台机器上的硬件资源，其中很重要的一点就是要充分利用线程异步完成任务。<br/>
 
 ## 基础知识
 我们主要了解清楚actor的Dispatcher、Router和future的ExecutionContext的概念就可以了。<br/>
@@ -307,6 +306,7 @@ Router中的10个actor都在工作了，default-dispatcher中的10个线程也�
 我们还可以使用Router的BalancingPool的策略。
 
 #### 优化的代码
+1. Launcher.optimizationV3
 ```scala
 val jobActor = system.actorOf(BalancingPool(10).props(Props(classOf[BlockingJobActor], cpuTaskCount, nonBlockingTaskCount)), "optimizationV3-actor")
 ```
@@ -387,3 +387,190 @@ val jobActor = system.actorOf(BalancingPool(10).props(Props(classOf[BlockingJobA
 #### 总结<br/>
 从日志看出，因为BalancingPool策略共享一个邮箱，所以拿取任务更充分，保证pool中的actor一直保持忙碌，但是依然存在严重的线程等待问题，<br/>
 同样本不用依赖其他任务的非阻塞内存查询操作，被阻塞住了。
+
+## 优化方案4
+上面的优化方案都不尽人意，接下来会采取一种资源隔离的方案，<br/>
+把阻塞IO的任务分离到单独的dispatcher，把需要大量计算、运行时间较长的任务分离到单独的dispatcher。
+
+#### 优化的代码
+1. optimizationV3.conf
+```text
+akka.actor{
+  default-dispatcher{
+    # Must be one of the following
+    # Dispatcher, PinnedDispatcher, or a FQCN to a class inheriting
+    # MessageDispatcherConfigurator with a public constructor with
+    # both com.typesafe.config.Config parameter and
+    # akka.dispatch.DispatcherPrerequisites parameters.
+    # PinnedDispatcher must be used together with executor=thread-pool-executor.
+    type = "Dispatcher"
+    executor = "fork-join-executor"
+    fork-join-executor {
+      # Min number of threads to cap factor-based parallelism number to
+      parallelism-min = 2
+      # The parallelism factor is used to determine thread pool size using the
+      # following formula: ceil(available processors * factor). Resulting size
+      # is then bounded by the parallelism-min and parallelism-max values.
+      parallelism-factor = 5.0
+      # Max number of threads to cap factor-based parallelism number to
+      parallelism-max = 10
+
+    }
+    # Throughput defines the number of messages that are processed in a batch
+    # before the thread is returned to the pool. Set to 1 for as fair as possible.
+    throughput = 20
+  }
+
+  blocking-io-dispatcher{
+    # Must be one of the following
+    # Dispatcher, PinnedDispatcher, or a FQCN to a class inheriting
+    # MessageDispatcherConfigurator with a public constructor with
+    # both com.typesafe.config.Config parameter and
+    # akka.dispatch.DispatcherPrerequisites parameters.
+    # PinnedDispatcher must be used together with executor=thread-pool-executor.
+    type = "Dispatcher"
+    executor = "fork-join-executor"
+    fork-join-executor {
+      # Min number of threads to cap factor-based parallelism number to
+      parallelism-min = 4
+      # The parallelism factor is used to determine thread pool size using the
+      # following formula: ceil(available processors * factor). Resulting size
+      # is then bounded by the parallelism-min and parallelism-max values.
+      parallelism-factor = 10.0
+      # Max number of threads to cap factor-based parallelism number to
+      parallelism-max = 20
+
+    }
+    # Throughput defines the number of messages that are processed in a batch
+    # before the thread is returned to the pool. Set to 1 for as fair as possible.
+    throughput = 40
+  }
+
+  cpu-work-dispatcher{
+    # Must be one of the following
+    # Dispatcher, PinnedDispatcher, or a FQCN to a class inheriting
+    # MessageDispatcherConfigurator with a public constructor with
+    # both com.typesafe.config.Config parameter and
+    # akka.dispatch.DispatcherPrerequisites parameters.
+    # PinnedDispatcher must be used together with executor=thread-pool-executor.
+    type = "Dispatcher"
+    executor = "fork-join-executor"
+    fork-join-executor {
+      # Min number of threads to cap factor-based parallelism number to
+      parallelism-min = 2
+      # The parallelism factor is used to determine thread pool size using the
+      # following formula: ceil(available processors * factor). Resulting size
+      # is then bounded by the parallelism-min and parallelism-max values.
+      parallelism-factor = 10.0
+      # Max number of threads to cap factor-based parallelism number to
+      parallelism-max = 10
+
+    }
+    # Throughput defines the number of messages that are processed in a batch
+    # before the thread is returned to the pool. Set to 1 for as fair as possible.
+    throughput = 40
+  }
+}
+```
+
+2. OptimizationV2Actor
+```scala
+case NewJob(info) =>
+      // some blocking IO operation
+      Future(dao.findByKey(info))(blockingExecutionContext).onComplete {
+        case Success(res) =>
+          // some non-blocking IO operation depend on blocking IO result
+          nonBlockingActor ! NonBlockingJobReq(res)
+        case Failure(e) =>
+          e.printStackTrace()
+          println(e.toString)
+      }(blockingExecutionContext)
+      // some high cpu work
+      (0 until cpuTaskCount).foreach {
+        _ =>
+          Future(cpuWorker.compute(100))(cpuExecutionContext).onComplete{
+            case Success(r) =>
+              println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, ComputeResult($r)")
+              // some non-blocking IO operation depend on cpu work result
+              nonBlockingActor ! NonBlockingJobReq(r.toString)
+            case Failure(e) =>
+              e.printStackTrace()
+              println(e.toString)
+          }(cpuExecutionContext)
+      }
+      // some non-blocking IO operation independent of blocking IO result
+      (0 until nonBlockingTaskCount).foreach {
+        _ => nonBlockingActor ! NonBlockingJobReq("independent of any result")
+      }
+```
+
+3. Launcher.optimizationV4
+```scala
+val jobActor = system.actorOf(Props(classOf[OptimizationV2Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV4-actor")
+```
+
+#### 日志及线程的使用情况<br/>
+执行时间：约50秒<br/>
+日志：<br/>
+```text
+00:02:27: d-akka.actor.blocking-io-dispatcher-20, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.cpu-work-dispatcher-17, start compute(100)
+00:02:27: d-akka.actor.cpu-work-dispatcher-16, start compute(100)
+00:02:27: d-akka.actor.blocking-io-dispatcher-28, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.cpu-work-dispatcher-23, start compute(100)
+00:02:27: d-akka.actor.cpu-work-dispatcher-25, start compute(100)
+00:02:27: d-akka.actor.cpu-work-dispatcher-10, start compute(100)
+00:02:27: d-akka.actor.blocking-io-dispatcher-29, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.cpu-work-dispatcher-9, start compute(100)
+00:02:27: d-akka.actor.cpu-work-dispatcher-21, start compute(100)
+00:02:27: d-akka.actor.blocking-io-dispatcher-26, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.cpu-work-dispatcher-11, start compute(100)
+00:02:27: d-akka.actor.cpu-work-dispatcher-19, start compute(100)
+00:02:27: d-akka.actor.cpu-work-dispatcher-27, start compute(100)
+00:02:27: d-akka.actor.blocking-io-dispatcher-14, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.blocking-io-dispatcher-5, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.blocking-io-dispatcher-12, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.blocking-io-dispatcher-24, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.cpu-work-dispatcher-13, start compute(100)
+00:02:27: d-akka.actor.cpu-work-dispatcher-7, start compute(100)
+00:02:27: d-akka.actor.blocking-io-dispatcher-31, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.blocking-io-dispatcher-30, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.cpu-work-dispatcher-15, start compute(100)
+00:02:27: d-akka.actor.cpu-work-dispatcher-6, start compute(100)
+00:02:27: d-akka.actor.blocking-io-dispatcher-34, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.blocking-io-dispatcher-18, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.blocking-io-dispatcher-33, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.cpu-work-dispatcher-22, start compute(100)
+00:02:27: d-akka.actor.blocking-io-dispatcher-8, start findByKey(optimizationV4-job)
+00:02:27: d-akka.actor.default-dispatcher-4, NonBlockingJobReq(independent of any result)
+00:02:27: d-akka.actor.blocking-io-dispatcher-32, start findByKey(optimizationV4-job)
+00:02:28: d-akka.actor.default-dispatcher-4, NonBlockingJobReq(independent of any result)
+...
+00:02:33: d-akka.actor.default-dispatcher-2, NonBlockingJobResp(INDEPENDENT OF ANY RESULT)
+00:02:33: d-akka.actor.default-dispatcher-35, NonBlockingJobReq(independent of any result)
+00:02:33: d-akka.actor.cpu-work-dispatcher-17, start compute(100)
+00:02:33: d-akka.actor.cpu-work-dispatcher-25, start compute(100)
+00:02:33: d-akka.actor.cpu-work-dispatcher-16, start compute(100)
+00:02:33: d-akka.actor.cpu-work-dispatcher-15, ComputeResult(12953293)
+00:02:33: d-akka.actor.cpu-work-dispatcher-9, ComputeResult(12683075)
+00:02:33: d-akka.actor.cpu-work-dispatcher-22, ComputeResult(12150066)
+00:02:33: d-akka.actor.cpu-work-dispatcher-21, ComputeResult(12132914)
+...
+00:03:17: d-akka.actor.default-dispatcher-4, NonBlockingJobResp(12498333)
+00:03:17: d-akka.actor.default-dispatcher-35, NonBlockingJobReq(db result is optimizationV4-job)
+00:03:17: d-akka.actor.default-dispatcher-4, NonBlockingJobResp(DB RESULT IS OPTIMIZATIONV4-JOB)
+00:03:17: d-akka.actor.default-dispatcher-35, NonBlockingJobResp(DB RESULT IS OPTIMIZATIONV4-JOB)
+...
+```
+
+线程使用情况：<br/>
+
+![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v4.png)
+
+#### 总结<br/>
+我们重新启用了Future，并将数据库查询任务分离到名叫blocking-io-dispatcher的dispatcher，<br/>
+将跑算法的任务分离到名叫cpu-work-dispatcher的dispatcher，默认的default-dispatcher用来跑非阻塞的任务，<br/>
+资源隔离，减少了资源的竞争，可以确保应用程序在糟糕的情况下仍然能够有资源去运行其他任务，保证应用程序的其他部分还是能够迅速地做出响应。
+         
+    
+

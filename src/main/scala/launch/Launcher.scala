@@ -23,8 +23,8 @@ object Launcher {
     //blocking
     //optimizationV1
     //optimizationV2
-    optimizationV3
-    //optimizationV4
+    //optimizationV3
+    optimizationV4
     //optimizationV5
   }
 
@@ -65,17 +65,17 @@ object Launcher {
   }
 
   def optimizationV4 = {
-    println("start optimizationV3")
-    val confPath = "/Users/deanzhang/work/code/github/akka-dispatcher-test/conf/optimizationV3.conf"
+    println("start optimizationV4")
+    val confPath = "/Users/deanzhang/work/code/github/akka-dispatcher-test/conf/optimizationV4.conf"
     val conf = ConfigFactory.parseFile(new File(confPath))
     val system = ActorSystem("d", conf)
-    val jobActor = system.actorOf(Props(classOf[OptimizationV2Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV3-actor")
-    doIt(jobActor, system, "optimizationV3")
+    val jobActor = system.actorOf(Props(classOf[OptimizationV2Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV4-actor")
+    doIt(jobActor, system, "optimizationV4")
   }
 
   def optimizationV5 = {
     println("start optimizationV7")
-    val confPath = "/Users/deanzhang/work/code/github/akka-dispatcher-test/conf/optimizationV3.conf"
+    val confPath = "/Users/deanzhang/work/code/github/akka-dispatcher-test/conf/optimizationV4.conf"
     val conf = ConfigFactory.parseFile(new File(confPath))
     val system = ActorSystem("d", conf)
     val jobActor = system.actorOf(Props(classOf[OptimizationV7Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV7-actor")
