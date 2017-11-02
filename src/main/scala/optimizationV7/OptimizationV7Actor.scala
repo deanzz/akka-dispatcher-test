@@ -4,14 +4,16 @@ import akka.actor.{Actor, Props}
 import blocking.BlockingJobActor.NewJob
 import blocking.NonBlockingJobActor
 import blocking.NonBlockingJobActor.{NonBlockingJobReq, NonBlockingJobResp}
+import optimizationV7.cpu.CPUWorkActor
+import optimizationV7.cpu.CPUWorkActor.{Compute, ComputeResult}
 import optimizationV7.dao.DaoActor
 import optimizationV7.dao.DaoActor.{FindByKey, FindByKeyResult}
 import org.joda.time.DateTime
 import util.TimerActor.Finish
 
-
-class OptimizationV7Actor extends Actor {
+class OptimizationV7Actor(cpuTaskCount: Int, nonBlockingTaskCount: Int) extends Actor {
   private val daoActor = context.actorOf(Props[DaoActor], "dao-actor")
+  private val cpuWorkActor = context.actorOf(Props[CPUWorkActor], "cpu-work-actor")
   private val nonBlockingActor = context.actorOf(Props[NonBlockingJobActor], "non-blocking-actor")
   private val timerActor = context.actorSelection("akka://d/user/timer-actor")
 
@@ -20,19 +22,27 @@ class OptimizationV7Actor extends Actor {
       // some blocking IO operation
       daoActor ! FindByKey(info)
       // some non-blocking IO operation independent of blocking IO result
-      (0 until 20).foreach {
-        _ => nonBlockingActor ! NonBlockingJobReq("independent of blocking IO result")
+      (0 until nonBlockingTaskCount).foreach {
+        _ => nonBlockingActor ! NonBlockingJobReq("independent of any result")
+      }
+
+      // some high cpu work
+      (0 until cpuTaskCount).foreach{
+        _ => cpuWorkActor ! Compute(100)
       }
 
     case FindByKeyResult(res) =>
       // some non-blocking IO operation depend on blocking IO result
-      (0 until 10).foreach{
-        _ => nonBlockingActor ! NonBlockingJobReq(res)
-      }
-      timerActor ! Finish
+      nonBlockingActor ! NonBlockingJobReq(res)
+
+    case ComputeResult(res) =>
+      println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, ComputeResult($res)")
+      // some non-blocking IO operation depend on cpu work result
+      nonBlockingActor ! NonBlockingJobReq(res.toString)
 
     case NonBlockingJobResp(info) =>
       println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, NonBlockingJobResp($info)")
+      timerActor ! Finish
   }
 }
 
