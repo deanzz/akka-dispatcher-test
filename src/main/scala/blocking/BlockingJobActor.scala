@@ -15,23 +15,22 @@ class BlockingJobActor(cpuTaskCount: Int, nonBlockingTaskCount: Int) extends Act
   private val timerActor = context.actorSelection("akka://d/user/timer-actor")
   override def receive: Receive = {
     case NewJob(info) =>
-
       // some blocking IO operation
       val res = dao.findByKey(info)
+      // some non-blocking IO operation depend on blocking IO result
+      nonBlockingActor ! NonBlockingJobReq(res)
       timerActor ! Finish
-      // some high cpu operation depend on blocking IO result
+      // some high cpu operation
       (0 until cpuTaskCount).foreach{
         _ =>
-          cpuWorker.compute(100)
+          val r = cpuWorker.compute(100)
           // some non-blocking IO operation depend on cpu work result
-          nonBlockingActor ! NonBlockingJobReq(res.toString)
+          nonBlockingActor ! NonBlockingJobReq(r.toString)
       }
-
       // some non-blocking IO operation independent of blocking IO result
       (0 until nonBlockingTaskCount).foreach {
         _ => nonBlockingActor ! NonBlockingJobReq("independent of any result")
       }
-
 
     case NonBlockingJobResp(info) =>
       println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, NonBlockingJobResp($info)")
