@@ -142,7 +142,7 @@ d-akka.actor.default-dispatcher-2、3承担了内存中查询结果的工作，�
 d-akka.actor.default-despatcher-4承担了查询数据库和跑算法的工作，查询数据库是阻塞IO的任务，所以线程在此期间会处于等待状态；跑算法的任务时cpu密集型任务，所以线程在此期间是运行状态。<br/>
 由于BlockingJobActor中代码的写法完全是同步方式，导致耗时的工作都放在一个线程上同步执行，浪费了剩余7个线程（配置的10个线程-使用的3个线程），所以延迟很高，吞吐量很低。
 
-## 优化1方案
+## 优化方案1
 对于糟糕的同步方案，我们自然而然想到的是用异步操作优化，即将查询数据库的任务和跑算法任务都放到Future里执行。<br/>
 我们将原有BlockingJobActor优化为OptimizationV1Actor，Future使用的执行上下文我们先简单的使用default-dispatcher，akka配置不变。
 
@@ -249,4 +249,4 @@ case NewJob(info) =>
 
 线程使用情况：<br/>
 
-![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v1.png)
+![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/optV1.png)
