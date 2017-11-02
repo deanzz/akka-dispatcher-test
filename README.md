@@ -4,6 +4,22 @@
 不过如今已经今非其比了，越来越多的cpu以多核来吸引眼球，多核时代早已到来。<br/>
 所以要最大化利用单台机器上的硬件资源，其中很重要的一点就是榨干机器上的cpu资源。<br/>
 
+## 基础知识扫盲
+我们主要了解清楚actor的Dispatcher、Router和future的ExecutionContext的概念就可以了。<br/>
+###### Dispatcher是什么？<br/>
+Dispatcher是一个执行上下文，actor中的任务都会交由Dispatcher去执行，Dispatcher将如何执行任务与何时运行任务两者解耦。<br/>
+大家也可以先简单把Dispatcher看成一个可执行任务的线程池。<br/>
+###### ExecutionContext是什么？<br/>
+scala.concurrent.ExecutionContext，是scala中Future的可执行上下文，大家可以把Dispatcher和ExecutionContext看成是一个东西，Dispatcher继承了ExecutionContext，他们的作用相同。<br/>
+###### Router是什么？<br/>
+Router是akka中一个用于负载均衡和路由的抽象。<br/>
+Router有很多种，今天我们会涉及到的是RoundRobinPool和BalancingPool。<br/>
+RoundRobinPool:<br/>
+这种路由的策略是会依次向Pool中的各个节点发送消息，循环往复。<br/>
+BalancingPool:<br/>
+BalancingPool这个路由策略有点特殊。只可以用于本地Actor。多个Actor共享同一个邮箱，一有空闲就处理邮箱中的任务。这种策略可以确保所有Actor都处于繁忙状态。对于本地集群来说，经常会优先选择这个路由策略。
+
+     
 ## 一个糟糕的例子
 我们从一个用akka-actor写的糟糕的例子开始我们的优化之旅。<br/>
 假设我们想完成这样一些工作:
@@ -21,7 +37,7 @@
 6. TimerActor，用于计算程序执行时间的actor
 7. blocking.conf，akka的配置文件
 
-下面我们来看看主要代码<br/>
+##### 下面我们来看看主要代码<br/>
 
 1. BlockingJobActor<br/>
 按照常规逻辑，<br/>
@@ -57,7 +73,7 @@ case NonBlockingJobReq(info) =>
 ```
 
 3. blocking.conf
-```json
+```text
 akka.actor{
   default-dispatcher{
     # Must be one of the following
@@ -85,7 +101,7 @@ akka.actor{
 }
 ```
 
-下面我们来看看运行结果以及现场的使用情况<br/>
+#####下面我们来看看运行结果以及线程的使用情况<br/>
 日志：<br/>
 ```text
 17:23:14: d-akka.actor.default-dispatcher-4, start findByKey(blocking-job)
@@ -102,13 +118,24 @@ akka.actor{
 17:23:44: d-akka.actor.default-dispatcher-4, start compute(100)
 17:23:49: d-akka.actor.default-dispatcher-4, start compute(100)
 17:23:49: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(67621455)
-17:23:54: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(67664446)
+17:23:54: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(67664446)
 17:23:54: d-akka.actor.default-dispatcher-4, start findByKey(blocking-job)
 17:23:54: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(independent of any result)
 ...
 17:23:55: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(independent of any result)
-17:24:04: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(db result is blocking-job)
+17:24:04: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(db result is blocking-job)
 ```
 
 线程使用情况<br/>
-![部署目录]()
+![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/blocking.png)
+
+黄色代表等待<br/>
+绿色代表运行<br/>
+红色代表阻塞<br/>
+
+#####最后我们来总结一下这个糟糕的例子<br/>
+从日志和线程使用情况看可以看出，除去akka内部用于发消息用的调度器线程，<br/>
+干活的线程就两个，d-akka.actor.default-dispatcher-2、d-akka.actor.default-dispatcher-3和d-akka.actor.default-dispatcher-4，<br/>
+d-akka.actor.default-dispatcher-2、3承担了内存中查询结果的工作，<br/>
+d-akka.actor.default-despatcher-4承担了查询数据库和跑算法的工作。<br/>
+由于BlockingJobActor中代码的写法完全是同步方式，导致耗时的工作都放在一个线程上同步执行，浪费了剩余7个线程（配置的10个线程-使用的3个线程），所以延迟很高，吞吐量很低。
