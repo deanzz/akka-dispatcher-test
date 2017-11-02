@@ -21,8 +21,8 @@ object Launcher {
 
   def main(args: Array[String]): Unit ={
     //blocking
-    optimizationV1
-    //optimizationV2
+    //optimizationV1
+    optimizationV2
     //optimizationV3
     //optimizationV4
     //optimizationV5
@@ -50,10 +50,10 @@ object Launcher {
 
   def optimizationV2 = {
     println("start optimizationV2")
-    val confPath = "/Users/deanzhang/work/code/github/akka-dispatcher-test/conf/optimizationV2.conf"
+    val confPath = "/Users/deanzhang/work/code/github/akka-dispatcher-test/conf/blocking.conf"
     val conf = ConfigFactory.parseFile(new File(confPath))
     val system = ActorSystem("d", conf)
-    val jobActor = system.actorOf(Props(classOf[OptimizationV2Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV2-actor")
+    val jobActor = system.actorOf(RoundRobinPool(10).props(Props(classOf[BlockingJobActor], cpuTaskCount, nonBlockingTaskCount)/*.withDispatcher("akka.actor.blocking-io-dispatcher")*/), "optimizationV2-actor")
     doIt(jobActor, system, "optimizationV2")
   }
 
@@ -62,7 +62,7 @@ object Launcher {
     val confPath = "/Users/deanzhang/work/code/github/akka-dispatcher-test/conf/optimizationV2.conf"
     val conf = ConfigFactory.parseFile(new File(confPath))
     val system = ActorSystem("d", conf)
-    val jobActor = system.actorOf(RoundRobinPool(10).props(Props(classOf[BlockingJobActor], cpuTaskCount, nonBlockingTaskCount).withDispatcher("akka.actor.blocking-io-dispatcher")), "optimizationV3-actor")
+    val jobActor = system.actorOf(Props(classOf[OptimizationV2Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV3-actor")
     doIt(jobActor, system, "optimizationV3")
   }
 
@@ -104,8 +104,8 @@ object Launcher {
 
   def doIt(jobActor: ActorRef, system: ActorSystem, name: String): Unit = {
     val timer = system.actorOf(Props[TimerActor], "timer-actor")
-    timer ! Start
     timer ! TotalCount(count + count * cpuTaskCount + count * nonBlockingTaskCount)
+    timer ! Start
     (0 until count).foreach{
       _ =>
         jobActor ! NewJob(s"$name-job")

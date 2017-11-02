@@ -125,6 +125,7 @@ akka.actor{
 ...
 17:23:55: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(independent of any result)
 17:24:04: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(db result is blocking-job)
+...
 ```
 
 线程使用情况：<br/>
@@ -249,4 +250,51 @@ case NewJob(info) =>
 
 线程使用情况：<br/>
 
-![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/optV1.png)
+![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v1.png)
+
+#### 总结<br/>
+从日志和线程使用情况看可以看出，除去akka内部用于发消息用的调度器线程d-scheduler-1，<br/>
+其余default-dispatcher中的10个线程都在工作了，非常好，没有线程闲着了，而且执行完成了。<br/>
+不过每个线程的状态都是不停地在运行和等待状态间交替，说明一个线程一会儿在做阻塞IO的任务，一会儿在做cpu密集型任务，一会儿在做内存查询，导致线程很忙，不够用。<br/>
+下面的优化方案会解决这个问题。
+
+## 优化方案2
+对于糟糕的同步方案，我们除了使用Future，还可以使用Router，单纯的增加干活的actor的数量，我们先使用RoundRobinPool的策略。
+
+#### 优化的代码
+1. Launcher.optimizationV2
+```scala
+val jobActor = system.actorOf(RoundRobinPool(10).props(Props(classOf[BlockingJobActor], cpuTaskCount, nonBlockingTaskCount)), "optimizationV2-actor")
+```
+#### 日志及线程的使用情况<br/>
+执行时间：约136秒<br/>
+日志：<br/>
+```text
+20:01:24: d-akka.actor.default-dispatcher-4, start findByKey(optimizationV2-job)
+20:01:34: d-akka.actor.default-dispatcher-5, start compute(100)
+20:01:34: d-akka.actor.default-dispatcher-3, start compute(100)
+...
+20:01:39: d-akka.actor.default-dispatcher-8, start compute(100)
+20:01:39: d-akka.actor.default-dispatcher-2, start compute(100)
+20:01:44: d-akka.actor.default-dispatcher-5, start findByKey(optimizationV2-job)
+20:01:44: d-akka.actor.default-dispatcher-11, start findByKey(optimizationV2-job)
+20:01:44: d-akka.actor.default-dispatcher-6, start findByKey(optimizationV2-job)
+20:01:44: d-akka.actor.default-dispatcher-10, start findByKey(optimizationV2-job)
+20:01:44: d-akka.actor.default-dispatcher-9, start findByKey(optimizationV2-job)
+...
+20:01:44: d-akka.actor.default-dispatcher-7, start findByKey(optimizationV2-job)
+20:01:44: d-akka.actor.default-dispatcher-2, start findByKey(optimizationV2-job)
+20:01:54: d-akka.actor.default-dispatcher-11, start compute(100)
+20:01:54: d-akka.actor.default-dispatcher-5, start compute(100)
+20:01:54: d-akka.actor.default-dispatcher-6, start compute(100)
+20:01:54: d-akka.actor.default-dispatcher-10, start compute(100)
+...
+20:01:59: d-akka.actor.default-dispatcher-5, start compute(100)
+...
+20:03:08: d-akka.actor.default-dispatcher-11, NonBlockingJobResp(INDEPENDENT OF ANY RESULT)
+20:03:08: d-akka.actor.default-dispatcher-11, NonBlockingJobResp(DB RESULT IS OPTIMIZATIONV2-JOB)
+20:03:08: d-akka.actor.default-dispatcher-11, NonBlockingJobResp(27622057)
+```
+线程使用情况：<br/>
+
+![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v2.png)
