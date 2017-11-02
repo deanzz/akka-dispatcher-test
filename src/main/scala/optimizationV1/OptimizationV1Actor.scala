@@ -30,7 +30,6 @@ class OptimizationV1Actor(cpuTaskCount: Int, nonBlockingTaskCount: Int) extends 
           e.printStackTrace()
           println(e.toString)
       }
-
       // some high cpu work
       (0 until cpuTaskCount).foreach {
         _ =>
@@ -44,7 +43,6 @@ class OptimizationV1Actor(cpuTaskCount: Int, nonBlockingTaskCount: Int) extends 
               println(e.toString)
           }
       }
-
       // some non-blocking IO operation independent of blocking IO result
       (0 until nonBlockingTaskCount).foreach {
         _ => nonBlockingActor ! NonBlockingJobReq("independent of any result")

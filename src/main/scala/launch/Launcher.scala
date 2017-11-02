@@ -20,8 +20,8 @@ object Launcher {
   val nonBlockingTaskCount = 40
 
   def main(args: Array[String]): Unit ={
-    blocking
-    //optimizationV1
+    //blocking
+    optimizationV1
     //optimizationV2
     //optimizationV3
     //optimizationV4

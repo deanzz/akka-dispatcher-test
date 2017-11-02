@@ -30,14 +30,14 @@ BalancingPool这个路由策略有点特殊。只可以用于本地Actor。多�
 根据需求我们写出了如下几个类：
 
 1. BlockingJobActor，干活的actor，接收一个NewJob消息处理上面所说的3个工作
-2. NonBlockingJobActor，显示一些字符串的actor，接收一个NonBlockingJobReq消息显示传入的字符串
+2. NonBlockingJobActor，内存中查询结果的actor，接收一个NonBlockingJobReq消息显示传入的字符串
 3. BlockingDao，模拟数据库查询的类，调用findByKey方法，会模拟阻塞等待10秒查询结果
 4. BlockingCPUWorker，模拟运行算法的类，调用compute方法，会让cpu满负荷运转5秒
 5. Launcher，程序运行的入口，在这里切换调用各种优化方法
 6. TimerActor，用于计算程序执行时间的actor
 7. blocking.conf，akka的配置文件
 
-#### 下面我们来看看主要代码<br/>
+#### 主要代码<br/>
 
 1. BlockingJobActor<br/>
 按照常规逻辑，<br/>
@@ -101,7 +101,8 @@ akka.actor{
 }
 ```
 
-#### 下面我们来看看运行结果以及线程的使用情况<br/>
+#### 日志及线程的使用情况<br/>
+执行时间：未完成<br/>
 日志：<br/>
 ```text
 17:23:14: d-akka.actor.default-dispatcher-4, start findByKey(blocking-job)
@@ -127,15 +128,125 @@ akka.actor{
 ```
 
 线程使用情况：<br/>
+
 ![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/blocking.png)
 
 黄色代表等待<br/>
 绿色代表运行<br/>
 红色代表阻塞<br/>
 
-##### 最后我们来总结一下这个糟糕的例子<br/>
+#### 总结<br/>
 从日志和线程使用情况看可以看出，除去akka内部用于发消息用的调度器线程d-scheduler-1，<br/>
 干活的线程就两个，d-akka.actor.default-dispatcher-2、d-akka.actor.default-dispatcher-3和d-akka.actor.default-dispatcher-4，<br/>
 d-akka.actor.default-dispatcher-2、3承担了内存中查询结果的工作，由于是非阻塞IO的任务，经常在等待同步任务，所以经常处在等待的状态<br/>
 d-akka.actor.default-despatcher-4承担了查询数据库和跑算法的工作，查询数据库是阻塞IO的任务，所以线程在此期间会处于等待状态；跑算法的任务时cpu密集型任务，所以线程在此期间是运行状态。<br/>
 由于BlockingJobActor中代码的写法完全是同步方式，导致耗时的工作都放在一个线程上同步执行，浪费了剩余7个线程（配置的10个线程-使用的3个线程），所以延迟很高，吞吐量很低。
+
+## 优化1方案
+对于糟糕的同步方案，我们自然而然想到的是用异步操作优化，即将查询数据库的任务和跑算法任务都放到Future里执行。<br/>
+我们将原有BlockingJobActor优化为OptimizationV1Actor，Future使用的执行上下文我们先简单的使用default-dispatcher，akka配置不变。
+
+#### 优化的代码
+1. OptimizationV1Actor<br/>
+```scala
+implicit val executionContext = context.system.dispatcher
+
+case NewJob(info) =>
+      // some blocking IO operation
+      Future(dao.findByKey(info)).onComplete{
+        case Success(res) =>
+          // some non-blocking IO operation depend on blocking IO result
+          nonBlockingActor ! NonBlockingJobReq(res)
+        case Failure(e) =>
+          e.printStackTrace()
+          println(e.toString)
+      }
+      // some high cpu work
+      (0 until cpuTaskCount).foreach {
+        _ =>
+          Future(cpuWorker.compute(100)).onComplete{
+            case Success(r) =>
+              println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, ComputeResult($r)")
+              // some non-blocking IO operation depend on cpu work result
+              nonBlockingActor ! NonBlockingJobReq(r.toString)
+            case Failure(e) =>
+              e.printStackTrace()
+              println(e.toString)
+          }
+      }
+      // some non-blocking IO operation independent of blocking IO result
+      (0 until nonBlockingTaskCount).foreach {
+        _ => nonBlockingActor ! NonBlockingJobReq("independent of any result")
+      }
+```
+
+#### 日志及线程的使用情况<br/>
+执行时间：约136秒<br/>
+日志：<br/>
+```text
+19:11:54: d-akka.actor.default-dispatcher-9, start compute(100)
+19:11:54: d-akka.actor.default-dispatcher-10, start compute(100)
+19:11:54: d-akka.actor.default-dispatcher-5, start compute(100)
+19:11:54: d-akka.actor.default-dispatcher-7, NonBlockingJobReq(independent of any result)
+19:11:54: d-akka.actor.default-dispatcher-6, start compute(100)
+19:11:54: d-akka.actor.default-dispatcher-8, start findByKey(optimizationV1-job)
+19:11:54: d-akka.actor.default-dispatcher-4, start findByKey(optimizationV1-job)
+19:11:54: d-akka.actor.default-dispatcher-3, start compute(100)
+19:11:54: d-akka.actor.default-dispatcher-11, start findByKey(optimizationV1-job)
+19:11:54: d-akka.actor.default-dispatcher-7, NonBlockingJobReq(independent of any result)
+19:11:54: d-akka.actor.default-dispatcher-2, start compute(100)
+19:11:54: d-akka.actor.default-dispatcher-7, NonBlockingJobReq(independent of any result)
+...
+19:11:55: d-akka.actor.default-dispatcher-7, NonBlockingJobReq(independent of any result)
+19:11:55: d-akka.actor.default-dispatcher-7, start findByKey(optimizationV1-job)
+19:11:59: d-akka.actor.default-dispatcher-9, NonBlockingJobReq(independent of any result)
+19:11:59: d-akka.actor.default-dispatcher-6, start compute(100)
+19:11:59: d-akka.actor.default-dispatcher-10, ComputeResult(36675535)
+19:11:59: d-akka.actor.default-dispatcher-10, start compute(100)
+19:11:59: d-akka.actor.default-dispatcher-3, ComputeResult(36280636)
+19:11:59: d-akka.actor.default-dispatcher-3, start findByKey(optimizationV1-job)
+19:11:59: d-akka.actor.default-dispatcher-5, ComputeResult(37208591)
+19:11:59: d-akka.actor.default-dispatcher-5, ComputeResult(36462217)
+19:11:59: d-akka.actor.default-dispatcher-5, ComputeResult(36296118)
+19:11:59: d-akka.actor.default-dispatcher-5, start compute(100)
+19:11:59: d-akka.actor.default-dispatcher-9, NonBlockingJobReq(independent of any result)
+19:11:59: d-akka.actor.default-dispatcher-2, start compute(100)
+19:11:59: d-akka.actor.default-dispatcher-9, NonBlockingJobReq(independent of any result)
+...
+19:12:00: d-akka.actor.default-dispatcher-9, NonBlockingJobReq(independent of any result)
+19:12:00: d-akka.actor.default-dispatcher-9, start findByKey(optimizationV1-job)
+19:12:04: d-akka.actor.default-dispatcher-8, NonBlockingJobReq(independent of any result)
+19:12:04: d-akka.actor.default-dispatcher-4, start compute(100)
+19:12:04: d-akka.actor.default-dispatcher-6, start compute(100)
+19:12:04: d-akka.actor.default-dispatcher-11, ComputeResult(54510901)
+19:12:04: d-akka.actor.default-dispatcher-11, start findByKey(optimizationV1-job)
+19:12:04: d-akka.actor.default-dispatcher-5, ComputeResult(54440819)
+19:12:04: d-akka.actor.default-dispatcher-5, start compute(100)
+19:12:04: d-akka.actor.default-dispatcher-8, NonBlockingJobReq(independent of any result)
+19:12:04: d-akka.actor.default-dispatcher-2, start compute(100)
+19:12:04: d-akka.actor.default-dispatcher-8, NonBlockingJobReq(independent of any result)
+...
+19:12:04: d-akka.actor.default-dispatcher-8, NonBlockingJobReq(independent of any result)
+19:12:04: d-akka.actor.default-dispatcher-10, start findByKey(optimizationV1-job)
+19:12:04: d-akka.actor.default-dispatcher-8, NonBlockingJobReq(independent of any result)
+...
+19:12:05: d-akka.actor.default-dispatcher-8, NonBlockingJobReq(independent of any result)
+19:12:05: d-akka.actor.default-dispatcher-7, start compute(100)
+19:12:05: d-akka.actor.default-dispatcher-8, start compute(100)
+19:12:09: d-akka.actor.default-dispatcher-6, start compute(100)
+19:12:09: d-akka.actor.default-dispatcher-3, start compute(100)
+19:12:09: d-akka.actor.default-dispatcher-5, ComputeResult(38017172)
+19:12:09: d-akka.actor.default-dispatcher-5, ComputeResult(38675825)
+19:12:09: d-akka.actor.default-dispatcher-5, start findByKey(optimizationV1-job)
+19:12:09: d-akka.actor.default-dispatcher-4, start findByKey(optimizationV1-job)
+19:12:09: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(independent of any result)
+...
+19:12:10: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(independent of any result)
+19:12:10: d-akka.actor.default-dispatcher-7, start compute(100)
+19:12:10: d-akka.actor.default-dispatcher-8, ComputeResult(38036533)
+...
+```
+
+线程使用情况：<br/>
+
+![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v1.png)
