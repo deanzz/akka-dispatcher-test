@@ -383,3 +383,7 @@ val jobActor = system.actorOf(BalancingPool(10).props(Props(classOf[BlockingJobA
 线程使用情况：<br/>
 
 ![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v3.png)
+
+#### 总结<br/>
+从日志看出，因为BalancingPool策略共享一个邮箱，所以拿取任务更充分，保证pool中的actor一直保持忙碌，但是依然存在严重的线程等待问题，<br/>
+同样本不用依赖其他任务的非阻塞内存查询操作，被阻塞住了。
