@@ -4,7 +4,7 @@
 不过如今已经今非其比了，越来越多的cpu以多核来吸引眼球，多核时代早已到来。<br/>
 所以要最大化利用单台机器上的硬件资源，其中很重要的一点就是榨干机器上的cpu资源。<br/>
 
-## 基础知识扫盲
+## 基础知识
 我们主要了解清楚actor的Dispatcher、Router和future的ExecutionContext的概念就可以了。<br/>
 ###### Dispatcher是什么？<br/>
 Dispatcher是一个执行上下文，actor中的任务都会交由Dispatcher去执行，Dispatcher将如何执行任务与何时运行任务两者解耦。<br/>
@@ -37,7 +37,7 @@ BalancingPool这个路由策略有点特殊。只可以用于本地Actor。多�
 6. TimerActor，用于计算程序执行时间的actor
 7. blocking.conf，akka的配置文件
 
-##### 下面我们来看看主要代码<br/>
+#### 下面我们来看看主要代码<br/>
 
 1. BlockingJobActor<br/>
 按照常规逻辑，<br/>
@@ -101,7 +101,7 @@ akka.actor{
 }
 ```
 
-#####下面我们来看看运行结果以及线程的使用情况<br/>
+#### 下面我们来看看运行结果以及线程的使用情况<br/>
 日志：<br/>
 ```text
 17:23:14: d-akka.actor.default-dispatcher-4, start findByKey(blocking-job)
@@ -126,16 +126,16 @@ akka.actor{
 17:24:04: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(db result is blocking-job)
 ```
 
-线程使用情况<br/>
+线程使用情况：<br/>
 ![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/blocking.png)
 
 黄色代表等待<br/>
 绿色代表运行<br/>
 红色代表阻塞<br/>
 
-#####最后我们来总结一下这个糟糕的例子<br/>
-从日志和线程使用情况看可以看出，除去akka内部用于发消息用的调度器线程，<br/>
+##### 最后我们来总结一下这个糟糕的例子<br/>
+从日志和线程使用情况看可以看出，除去akka内部用于发消息用的调度器线程d-scheduler-1，<br/>
 干活的线程就两个，d-akka.actor.default-dispatcher-2、d-akka.actor.default-dispatcher-3和d-akka.actor.default-dispatcher-4，<br/>
-d-akka.actor.default-dispatcher-2、3承担了内存中查询结果的工作，<br/>
-d-akka.actor.default-despatcher-4承担了查询数据库和跑算法的工作。<br/>
+d-akka.actor.default-dispatcher-2、3承担了内存中查询结果的工作，由于是非阻塞IO的任务，经常在等待同步任务，所以经常处在等待的状态<br/>
+d-akka.actor.default-despatcher-4承担了查询数据库和跑算法的工作，查询数据库是阻塞IO的任务，所以线程在此期间会处于等待状态；跑算法的任务时cpu密集型任务，所以线程在此期间是运行状态。<br/>
 由于BlockingJobActor中代码的写法完全是同步方式，导致耗时的工作都放在一个线程上同步执行，浪费了剩余7个线程（配置的10个线程-使用的3个线程），所以延迟很高，吞吐量很低。
