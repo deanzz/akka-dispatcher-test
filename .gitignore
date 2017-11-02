@@ -1,0 +1,12 @@
+.idea
+target
+project/target
+
+.idea/modules.xml
+
+.idea/sbt.xml
+
+.idea/scala_compiler.xml
+
+.idea/vcs.xml
+
