@@ -255,8 +255,8 @@ case NewJob(info) =>
 #### 总结<br/>
 从日志和线程使用情况看可以看出，除去akka内部用于发消息用的调度器线程d-scheduler-1，<br/>
 其余default-dispatcher中的10个线程都在工作了，非常好，没有线程闲着了，而且执行完成了。<br/>
-不过每个线程的状态都是不停地在运行和等待状态间交替，说明一个线程一会儿在做阻塞IO的任务，一会儿在做cpu密集型任务，一会儿在做内存查询，导致线程很忙，不够用。<br/>
-下面的优化方案会解决这个问题。
+不过每个线程的状态都是不停地在运行和等待状态间交替，说明一个线程一会儿在做阻塞IO的任务，一会儿在做cpu密集型任务，一会儿在做内存查询，导致线程很忙，<br/>
+而且本不用依赖其他任务的非阻塞内存查询操作，被阻塞住了。
 
 ## 优化方案2
 对于糟糕的同步方案，我们除了使用Future，还可以使用Router，单纯的增加干活的actor的数量，我们先使用RoundRobinPool的策略。
@@ -267,7 +267,7 @@ case NewJob(info) =>
 val jobActor = system.actorOf(RoundRobinPool(10).props(Props(classOf[BlockingJobActor], cpuTaskCount, nonBlockingTaskCount)), "optimizationV2-actor")
 ```
 #### 日志及线程的使用情况<br/>
-执行时间：约136秒<br/>
+执行时间：约120秒<br/>
 日志：<br/>
 ```text
 20:01:24: d-akka.actor.default-dispatcher-4, start findByKey(optimizationV2-job)
@@ -292,9 +292,94 @@ val jobActor = system.actorOf(RoundRobinPool(10).props(Props(classOf[BlockingJob
 20:01:59: d-akka.actor.default-dispatcher-5, start compute(100)
 ...
 20:03:08: d-akka.actor.default-dispatcher-11, NonBlockingJobResp(INDEPENDENT OF ANY RESULT)
-20:03:08: d-akka.actor.default-dispatcher-11, NonBlockingJobResp(DB RESULT IS OPTIMIZATIONV2-JOB)
-20:03:08: d-akka.actor.default-dispatcher-11, NonBlockingJobResp(27622057)
+20:03:08: d-akka.actor.default-dispatcher-11, NonBlockingJobResp(DB RESULT IS 
+...
 ```
 线程使用情况：<br/>
 
 ![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v2.png)
+
+#### 总结<br/>
+Router中的10个actor都在工作了，default-dispatcher中的10个线程也都用上了，同样也执行完成了，但是依然存在严重的线程等待问题，<br/>
+同样本不用依赖其他任务的非阻塞内存查询操作，被阻塞住了。
+
+## 优化方案3
+我们还可以使用Router的BalancingPool的策略。
+
+#### 优化的代码
+```scala
+val jobActor = system.actorOf(BalancingPool(10).props(Props(classOf[BlockingJobActor], cpuTaskCount, nonBlockingTaskCount)), "optimizationV3-actor")
+```
+
+#### 日志及线程的使用情况<br/>
+执行时间：约105秒<br/>
+日志：<br/>
+```text
+20:56:44: d-BalancingPool-/optimizationV3-actor-19, start findByKey(optimizationV3-job)
+20:56:44: d-BalancingPool-/optimizationV3-actor-5, start findByKey(optimizationV3-job)
+20:56:44: d-BalancingPool-/optimizationV3-actor-7, start findByKey(optimizationV3-job)
+20:56:44: d-BalancingPool-/optimizationV3-actor-6, start findByKey(optimizationV3-job)
+20:56:44: d-BalancingPool-/optimizationV3-actor-18, start findByKey(optimizationV3-job)
+20:56:44: d-BalancingPool-/optimizationV3-actor-8, start findByKey(optimizationV3-job)
+20:56:44: d-BalancingPool-/optimizationV3-actor-9, start findByKey(optimizationV3-job)
+20:56:44: d-BalancingPool-/optimizationV3-actor-17, start findByKey(optimizationV3-job)
+20:56:44: d-BalancingPool-/optimizationV3-actor-10, start findByKey(optimizationV3-job)
+20:56:54: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(db result is optimizationV3-job)
+20:56:54: d-akka.actor.default-dispatcher-16, NonBlockingJobReq(db result is optimizationV3-job)
+20:56:54: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(db result is optimizationV3-job)
+20:56:54: d-akka.actor.default-dispatcher-13, NonBlockingJobReq(db result is optimizationV3-job)
+20:56:54: d-akka.actor.default-dispatcher-15, NonBlockingJobReq(db result is optimizationV3-job)
+20:56:54: d-akka.actor.default-dispatcher-12, NonBlockingJobReq(db result is optimizationV3-job)
+20:56:54: d-akka.actor.default-dispatcher-4, NonBlockingJobReq(db result is optimizationV3-job)
+20:56:54: d-akka.actor.default-dispatcher-20, NonBlockingJobReq(db result is optimizationV3-job)
+20:56:54: d-akka.actor.default-dispatcher-22, NonBlockingJobReq(db result is optimizationV3-job)
+20:56:54: d-akka.actor.default-dispatcher-21, NonBlockingJobReq(db result is optimizationV3-job)
+20:56:54: d-BalancingPool-/optimizationV3-actor-17, start compute(100)
+...
+20:56:54: d-BalancingPool-/optimizationV3-actor-6, start compute(100)
+20:56:59: d-akka.actor.default-dispatcher-21, NonBlockingJobReq(21337335)
+20:56:59: d-akka.actor.default-dispatcher-16, NonBlockingJobReq(21912069)
+20:56:59: d-BalancingPool-/optimizationV3-actor-17, start compute(100)
+20:56:59: d-BalancingPool-/optimizationV3-actor-18, start compute(100)
+20:56:59: d-BalancingPool-/optimizationV3-actor-9, start compute(100)
+20:56:59: d-akka.actor.default-dispatcher-22, NonBlockingJobReq(21851866)
+20:56:59: d-BalancingPool-/optimizationV3-actor-19, start compute(100)
+20:56:59: d-akka.actor.default-dispatcher-20, NonBlockingJobReq(21988980)
+20:56:59: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(23503990)
+20:56:59: d-BalancingPool-/optimizationV3-actor-7, start compute(100)
+20:56:59: d-akka.actor.default-dispatcher-12, NonBlockingJobReq(21511595)
+20:56:59: d-BalancingPool-/optimizationV3-actor-10, start compute(100)
+20:56:59: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(21921178)
+20:56:59: d-BalancingPool-/optimizationV3-actor-8, start compute(100)
+20:56:59: d-BalancingPool-/optimizationV3-actor-5, start compute(100)
+20:56:59: d-akka.actor.default-dispatcher-13, NonBlockingJobReq(22026859)
+20:56:59: d-akka.actor.default-dispatcher-21, NonBlockingJobReq(21721455)
+20:56:59: d-BalancingPool-/optimizationV3-actor-11, start compute(100)
+20:56:59: d-BalancingPool-/optimizationV3-actor-6, start compute(100)
+20:56:59: d-akka.actor.default-dispatcher-12, NonBlockingJobReq(21849218)
+20:57:04: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(23146505)
+20:57:04: d-akka.actor.default-dispatcher-12, NonBlockingJobReq(22942295)
+20:57:04: d-akka.actor.default-dispatcher-21, NonBlockingJobReq(23012881)
+20:57:04: d-BalancingPool-/optimizationV3-actor-17, start findByKey(optimizationV3-job)
+20:57:04: d-BalancingPool-/optimizationV3-actor-7, start findByKey(optimizationV3-job)
+20:57:04: d-BalancingPool-/optimizationV3-actor-18, start findByKey(optimizationV3-job)
+20:57:04: d-akka.actor.default-dispatcher-13, NonBlockingJobReq(23278757)
+20:57:04: d-BalancingPool-/optimizationV3-actor-10, start findByKey(optimizationV3-job)
+20:57:04: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(23351830)
+...
+20:57:04: d-BalancingPool-/optimizationV3-actor-5, start findByKey(optimizationV3-job)
+20:57:04: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(independent of any result)
+20:57:04: d-akka.actor.default-dispatcher-21, NonBlockingJobReq(independent of any result)
+20:57:04: d-akka.actor.default-dispatcher-23, NonBlockingJobReq(23426269)
+20:57:04: d-BalancingPool-/optimizationV3-actor-11, start findByKey(optimizationV3-job)
+20:57:04: d-akka.actor.default-dispatcher-13, NonBlockingJobReq(independent of any result)
+20:57:04: d-akka.actor.default-dispatcher-24, NonBlockingJobReq(23207851)
+20:57:04: d-BalancingPool-/optimizationV3-actor-6, start findByKey(optimizationV3-job)
+20:57:04: d-akka.actor.default-dispatcher-2, NonBlockingJobReq(independent of any result)
+...
+20:57:04: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(independent of any result)
+...
+```
+线程使用情况：<br/>
+
+![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v3.png)
