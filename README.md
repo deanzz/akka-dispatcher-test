@@ -590,9 +590,9 @@ val jobActor = system.actorOf(Props(classOf[OptimizationV2Actor], cpuTaskCount, 
 ![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v4.png)
 
 #### 总结<br/>
-我们重新启用了Future，并将数据库查询任务分离到名叫blocking-io-dispatcher的dispatcher，其中最大可存在20个线程<br/>
-将跑算法的任务分离到名叫cpu-work-dispatcher的dispatcher，其中最大可存在20个线程，默认的default-dispatcher用来跑非阻塞的任务，<br/>
-资源隔离，减少了资源的竞争，可以确保应用程序在糟糕的情况下仍然能够有资源去运行其他任务，保证应用程序的其他部分还是能够迅速地做出响应。
+我们重新启用了Future，并将数据库查询任务分离到名叫blocking-io-dispatcher的dispatcher，<br/>
+将跑算法的任务分离到名叫cpu-work-dispatcher的dispatcher，默认的default-dispatcher用来跑非阻塞的任务，<br/>
+资源隔离减少了不同种类任务资源的竞争，可以确保应用程序在糟糕的情况下仍然能够有资源去运行其他任务，保证应用程序的其他部分还是能够迅速地做出响应。
          
 ## 优化方案5
 接下来我们还沿用资源隔离的方案，但是完全采用actor模型的设计模式，即万物都为actor，所以数据库查询任务抽象到DaoActor，跑算法抽象到CPUWorkerActor,<br/>
