@@ -1,10 +1,11 @@
 # akka-actor之性能优化
 >这次给大家分享一下akka-actor如何进行性能优化，以达到最大化利用单台机器上的硬件资源的目的。<br/>
 当今，处理器早已步入多核时代。<br/>
-所以要最大化利用单台机器上的硬件资源，其中很重要的一点就是要充分利用线程异步完成任务。<br/>
+所以要最大化利用单台机器上的硬件资源，其中很重要的一点就是要充分利用线程异步完成任务，<br/>
+即创造一个非阻塞、异步的消息驱动系统。<br/>
 
 ## 基础知识
-我们主要了解清楚actor的Dispatcher、Router和future的ExecutionContext的概念就可以了。<br/>
+
 ###### Dispatcher是什么？<br/>
 Dispatcher是一个执行上下文，actor中的任务都会交由Dispatcher去执行，Dispatcher将如何执行任务与何时运行任务两者解耦。<br/>
 大家也可以先简单把Dispatcher看成一个可执行任务的线程池。<br/>
@@ -17,7 +18,9 @@ RoundRobinPool:<br/>
 这种路由的策略是会依次向Pool中的各个节点发送消息，循环往复。<br/>
 BalancingPool:<br/>
 BalancingPool这个路由策略有点特殊。只可以用于本地Actor。多个Actor共享同一个邮箱，一有空闲就处理邮箱中的任务。这种策略可以确保所有Actor都处于繁忙状态。对于本地集群来说，经常会优先选择这个路由策略。
-
+###### Pipe是什么？<br/>
+Pipe是一种消息传递方式，它接受Future的结果作为参数，然后将其传递给所提供的Actor引用，<br/>
+比如：pipe(future) to sender()
      
 ## 一个糟糕的例子
 我们从一个用akka-actor写的糟糕的例子开始我们的优化之旅。<br/>
@@ -34,17 +37,18 @@ BalancingPool这个路由策略有点特殊。只可以用于本地Actor。多�
 4. BlockingCPUWorker，模拟运行算法的类，调用compute方法，会让cpu满负荷运转5秒
 5. Launcher，程序运行的入口，在这里切换调用各种优化方法
 6. TimerActor，用于计算程序执行时间的actor
-7. blocking.conf，akka的配置文件
+7. conf/blocking.conf，akka的配置文件
 
 #### 主要代码<br/>
-
+具体内容可阅读代码中blocking包的内容。
 1. BlockingJobActor<br/>
 按照常规逻辑，<br/>
 首先调用dao.findByKey(info)查询数据库获取结果，并显示结果；<br/>
 然后调用几次cpuWorker.compute(100)跑计算量较大的算法，并显示结果；<br/>
 最后请求内存中查询一些结果，并显示。
 ```scala
-case NewJob(info) =>
+override def receive: Receive = {
+    case NewJob(info) =>
       // some blocking IO operation
       val res = dao.findByKey(info)
       // some non-blocking IO operation depend on blocking IO result
@@ -61,14 +65,21 @@ case NewJob(info) =>
       (0 until nonBlockingTaskCount).foreach {
         _ => nonBlockingActor ! NonBlockingJobReq("independent of any result")
       }
+
+    case NonBlockingJobResp(info) =>
+      println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, NonBlockingJobResp($info)")
+      timerActor ! Finish
+  }
 ```
 
 2. NonBlockingJobActor
 ```scala
-case NonBlockingJobReq(info) =>
+override def receive: Receive = {
+    case NonBlockingJobReq(info) =>
       println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, NonBlockingJobReq($info)")
       Thread.sleep(20)
       sender() ! NonBlockingJobResp(s"${info.toUpperCase}")
+  }
 ```
 
 3. blocking.conf
@@ -147,11 +158,13 @@ d-akka.actor.default-despatcher-4承担了查询数据库和跑算法的工作�
 我们将原有BlockingJobActor优化为OptimizationV1Actor，Future使用的执行上下文我们先简单的使用default-dispatcher，akka配置不变。
 
 #### 优化的代码
+具体内容可阅读代码中optimizationV1包的内容。
 1. OptimizationV1Actor<br/>
 ```scala
 implicit val executionContext = context.system.dispatcher
 
-case NewJob(info) =>
+override def receive: Receive = {
+    case NewJob(info) =>
       // some blocking IO operation
       Future(dao.findByKey(info)).onComplete{
         case Success(res) =>
@@ -178,6 +191,11 @@ case NewJob(info) =>
       (0 until nonBlockingTaskCount).foreach {
         _ => nonBlockingActor ! NonBlockingJobReq("independent of any result")
       }
+
+    case NonBlockingJobResp(info) =>
+      println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, NonBlockingJobResp($info)")
+      timerActor ! Finish
+  }
 ```
 
 #### 日志及线程的使用情况<br/>
@@ -393,7 +411,8 @@ val jobActor = system.actorOf(BalancingPool(10).props(Props(classOf[BlockingJobA
 把阻塞IO的任务分离到单独的dispatcher，把需要大量计算、运行时间较长的任务分离到单独的dispatcher。
 
 #### 优化的代码
-1. optimizationV3.conf
+具体内容可阅读代码中conf目录和optimizationV4包的内容。
+1. optimizationV4.conf
 ```text
 akka.actor{
   default-dispatcher{
@@ -414,7 +433,6 @@ akka.actor{
       parallelism-factor = 5.0
       # Max number of threads to cap factor-based parallelism number to
       parallelism-max = 10
-
     }
     # Throughput defines the number of messages that are processed in a batch
     # before the thread is returned to the pool. Set to 1 for as fair as possible.
@@ -438,12 +456,11 @@ akka.actor{
       # is then bounded by the parallelism-min and parallelism-max values.
       parallelism-factor = 10.0
       # Max number of threads to cap factor-based parallelism number to
-      parallelism-max = 20
-
+      parallelism-max = 15
     }
     # Throughput defines the number of messages that are processed in a batch
     # before the thread is returned to the pool. Set to 1 for as fair as possible.
-    throughput = 40
+    throughput = 30
   }
 
   cpu-work-dispatcher{
@@ -457,25 +474,25 @@ akka.actor{
     executor = "fork-join-executor"
     fork-join-executor {
       # Min number of threads to cap factor-based parallelism number to
-      parallelism-min = 2
+      parallelism-min = 4
       # The parallelism factor is used to determine thread pool size using the
       # following formula: ceil(available processors * factor). Resulting size
       # is then bounded by the parallelism-min and parallelism-max values.
       parallelism-factor = 10.0
       # Max number of threads to cap factor-based parallelism number to
-      parallelism-max = 10
-
+      parallelism-max = 15
     }
     # Throughput defines the number of messages that are processed in a batch
     # before the thread is returned to the pool. Set to 1 for as fair as possible.
-    throughput = 40
+    throughput = 30
   }
 }
 ```
 
-2. OptimizationV2Actor
+2. OptimizationV4Actor
 ```scala
-case NewJob(info) =>
+override def receive: Receive = {
+    case NewJob(info) =>
       // some blocking IO operation
       Future(dao.findByKey(info))(blockingExecutionContext).onComplete {
         case Success(res) =>
@@ -502,6 +519,11 @@ case NewJob(info) =>
       (0 until nonBlockingTaskCount).foreach {
         _ => nonBlockingActor ! NonBlockingJobReq("independent of any result")
       }
+
+    case NonBlockingJobResp(info) =>
+      println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, NonBlockingJobResp($info)")
+      timerActor ! Finish
+  }
 ```
 
 3. Launcher.optimizationV4
@@ -568,9 +590,123 @@ val jobActor = system.actorOf(Props(classOf[OptimizationV2Actor], cpuTaskCount, 
 ![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v4.png)
 
 #### 总结<br/>
-我们重新启用了Future，并将数据库查询任务分离到名叫blocking-io-dispatcher的dispatcher，<br/>
-将跑算法的任务分离到名叫cpu-work-dispatcher的dispatcher，默认的default-dispatcher用来跑非阻塞的任务，<br/>
+我们重新启用了Future，并将数据库查询任务分离到名叫blocking-io-dispatcher的dispatcher，其中最大可存在20个线程<br/>
+将跑算法的任务分离到名叫cpu-work-dispatcher的dispatcher，其中最大可存在20个线程，默认的default-dispatcher用来跑非阻塞的任务，<br/>
 资源隔离，减少了资源的竞争，可以确保应用程序在糟糕的情况下仍然能够有资源去运行其他任务，保证应用程序的其他部分还是能够迅速地做出响应。
          
-    
+## 优化方案5
+接下来我们还沿用资源隔离的方案，但是完全采用actor模型的设计模式，即万物都为actor，所以数据库查询任务抽象到DaoActor，跑算法抽象到CPUWorkerActor,<br/>
+同时使用pipe传递future消息。
+
+#### 优化的代码
+1. OptimizationV5Actor
+```scala
+override def receive: Receive = {
+    case NewJob(info) =>
+      // some blocking IO operation
+      daoActor ! FindByKey(info)
+      // some non-blocking IO operation independent of blocking IO result
+      (0 until nonBlockingTaskCount).foreach {
+        _ => nonBlockingActor ! NonBlockingJobReq("independent of any result")
+      }
+      // some high cpu work
+      (0 until cpuTaskCount).foreach{
+        _ => cpuWorkActor ! Compute(100)
+      }
+    case FindByKeyResult(res) =>
+      // some non-blocking IO operation depend on blocking IO result
+      nonBlockingActor ! NonBlockingJobReq(res)
+    case ComputeResult(res) =>
+      println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, ComputeResult($res)")
+      // some non-blocking IO operation depend on cpu work result
+      nonBlockingActor ! NonBlockingJobReq(res.toString)
+    case NonBlockingJobResp(info) =>
+      println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, NonBlockingJobResp($info)")
+      timerActor ! Finish  
+}
+```
+
+2. DaoActor
+```scala
+override def receive: Receive = {
+    case FindByKey(key) =>
+      val future = Future(FindByKeyResult(findByKey(key)))
+      pipe(future) to sender()
+  }
+```
+
+3. CPUWorkerActor
+```scala
+override def receive: Receive = {
+    case Compute(n) =>
+      val future = Future(ComputeResult(compute(n)))
+      pipe(future) to sender()
+  }
+```
+
+4. Launcher.optimizationV5
+```scala
+val jobActor = system.actorOf(Props(classOf[OptimizationV5Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV5-actor")
+```
+
+#### 日志及线程的使用情况<br/>
+执行时间：约50秒<br/>
+日志：<br/>
+```text
+14:42:09: d-akka.actor.cpu-work-dispatcher-23, start compute(100)
+14:42:09: d-akka.actor.cpu-work-dispatcher-25, start compute(100)
+14:42:09: d-akka.actor.cpu-work-dispatcher-22, start compute(100)
+14:42:09: d-akka.actor.blocking-io-dispatcher-16, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.cpu-work-dispatcher-26, start compute(100)
+14:42:09: d-akka.actor.blocking-io-dispatcher-21, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.cpu-work-dispatcher-18, start compute(100)
+14:42:09: d-akka.actor.blocking-io-dispatcher-13, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.cpu-work-dispatcher-30, start compute(100)
+14:42:09: d-akka.actor.cpu-work-dispatcher-15, start compute(100)
+14:42:09: d-akka.actor.cpu-work-dispatcher-19, start compute(100)
+14:42:09: d-akka.actor.cpu-work-dispatcher-14, start compute(100)
+14:42:09: d-akka.actor.cpu-work-dispatcher-20, start compute(100)
+14:42:09: d-akka.actor.blocking-io-dispatcher-9, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.blocking-io-dispatcher-11, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.cpu-work-dispatcher-12, start compute(100)
+14:42:09: d-akka.actor.blocking-io-dispatcher-28, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.cpu-work-dispatcher-33, start compute(100)
+14:42:09: d-akka.actor.blocking-io-dispatcher-32, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.blocking-io-dispatcher-37, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.blocking-io-dispatcher-34, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.blocking-io-dispatcher-38, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.blocking-io-dispatcher-36, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.blocking-io-dispatcher-10, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.blocking-io-dispatcher-35, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.blocking-io-dispatcher-7, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.cpu-work-dispatcher-24, start compute(100)
+14:42:09: d-akka.actor.blocking-io-dispatcher-31, start findByKey(optimizationV5-job)
+14:42:09: d-akka.actor.cpu-work-dispatcher-27, start compute(100)
+14:42:09: d-akka.actor.cpu-work-dispatcher-29, start compute(100)
+14:42:09: d-akka.actor.default-dispatcher-4, NonBlockingJobReq(independent of any result)
+14:42:09: d-akka.actor.default-dispatcher-4, NonBlockingJobReq(independent of any result)
+14:42:09: d-akka.actor.default-dispatcher-8, NonBlockingJobResp(INDEPENDENT OF ANY RESULT)
+...
+14:43:00: d-akka.actor.default-dispatcher-17, NonBlockingJobResp(20660410)
+14:43:00: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(22093932)
+14:43:00: d-akka.actor.default-dispatcher-2, NonBlockingJobResp(20728029)
+14:43:00: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(db result is optimizationV5-job)
+14:43:00: d-akka.actor.default-dispatcher-17, NonBlockingJobResp(22093932)
+14:43:00: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(db result is optimizationV5-job)
+14:43:00: d-akka.actor.default-dispatcher-2, NonBlockingJobResp(DB RESULT IS OPTIMIZATIONV5-JOB)
+14:43:00: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(db result is optimizationV5-job)
+14:43:00: d-akka.actor.default-dispatcher-17, NonBlockingJobResp(DB RESULT IS OPTIMIZATIONV5-JOB)
+14:43:00: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(db result is optimizationV5-job)
+14:43:00: d-akka.actor.default-dispatcher-17, NonBlockingJobResp(DB RESULT IS OPTIMIZATIONV5-JOB)
+14:43:00: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(db result is optimizationV5-job)
+14:43:00: d-akka.actor.default-dispatcher-2, NonBlockingJobResp(DB RESULT IS OPTIMIZATIONV5-JOB)
+14:43:00: d-akka.actor.default-dispatcher-3, NonBlockingJobResp(DB RESULT IS OPTIMIZATIONV5-JOB)
+```
+
+线程使用情况：<br/>
+
+![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v5.png)
+
+#### 总结<br/>
+这种方案的性能与优化方案4的性能相当，因为同样采用了资源隔离和Future的方案，但是这种方案更符合actor的思维模式，也是最为推荐的方式。
 

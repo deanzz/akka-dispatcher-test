@@ -1,7 +1,7 @@
-package optimizationV7.dao
+package optimizationV5.dao
 
 import akka.actor.Actor
-import optimizationV7.dao.DaoActor.{FindByKey, FindByKeyResult}
+import optimizationV5.dao.DaoActor.{FindByKey, FindByKeyResult}
 import org.joda.time.DateTime
 import akka.pattern.pipe
 

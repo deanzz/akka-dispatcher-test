@@ -1,17 +1,17 @@
-package optimizationV7
+package optimizationV5
 
 import akka.actor.{Actor, Props}
 import blocking.BlockingJobActor.NewJob
 import blocking.NonBlockingJobActor
 import blocking.NonBlockingJobActor.{NonBlockingJobReq, NonBlockingJobResp}
-import optimizationV7.cpu.CPUWorkActor
-import optimizationV7.cpu.CPUWorkActor.{Compute, ComputeResult}
-import optimizationV7.dao.DaoActor
-import optimizationV7.dao.DaoActor.{FindByKey, FindByKeyResult}
+import optimizationV5.cpu.CPUWorkActor
+import optimizationV5.cpu.CPUWorkActor.{Compute, ComputeResult}
+import optimizationV5.dao.DaoActor
+import optimizationV5.dao.DaoActor.{FindByKey, FindByKeyResult}
 import org.joda.time.DateTime
 import util.TimerActor.Finish
 
-class OptimizationV7Actor(cpuTaskCount: Int, nonBlockingTaskCount: Int) extends Actor {
+class OptimizationV5Actor(cpuTaskCount: Int, nonBlockingTaskCount: Int) extends Actor {
   private val daoActor = context.actorOf(Props[DaoActor], "dao-actor")
   private val cpuWorkActor = context.actorOf(Props[CPUWorkActor], "cpu-work-actor")
   private val nonBlockingActor = context.actorOf(Props[NonBlockingJobActor], "non-blocking-actor")
@@ -25,27 +25,23 @@ class OptimizationV7Actor(cpuTaskCount: Int, nonBlockingTaskCount: Int) extends 
       (0 until nonBlockingTaskCount).foreach {
         _ => nonBlockingActor ! NonBlockingJobReq("independent of any result")
       }
-
       // some high cpu work
       (0 until cpuTaskCount).foreach{
         _ => cpuWorkActor ! Compute(100)
       }
-
     case FindByKeyResult(res) =>
       // some non-blocking IO operation depend on blocking IO result
       nonBlockingActor ! NonBlockingJobReq(res)
-
     case ComputeResult(res) =>
       println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, ComputeResult($res)")
       // some non-blocking IO operation depend on cpu work result
       nonBlockingActor ! NonBlockingJobReq(res.toString)
-
     case NonBlockingJobResp(info) =>
       println(s"${DateTime.now().toString("HH:mm:ss")}: ${Thread.currentThread().getName}, NonBlockingJobResp($info)")
       timerActor ! Finish
   }
 }
 
-object OptimizationV7Actor {
+object OptimizationV5Actor {
   case class NewJob(info: String)
 }

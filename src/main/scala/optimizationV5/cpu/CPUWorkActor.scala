@@ -1,7 +1,7 @@
-package optimizationV7.cpu
+package optimizationV5.cpu
 
 import akka.actor.Actor
-import optimizationV7.cpu.CPUWorkActor.{Compute, ComputeResult}
+import optimizationV5.cpu.CPUWorkActor.{Compute, ComputeResult}
 import akka.pattern.pipe
 import org.joda.time.DateTime
 

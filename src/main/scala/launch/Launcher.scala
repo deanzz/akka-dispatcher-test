@@ -8,8 +8,8 @@ import blocking.BlockingJobActor
 import blocking.BlockingJobActor.NewJob
 import com.typesafe.config.ConfigFactory
 import optimizationV1.OptimizationV1Actor
-import optimizationV2.OptimizationV2Actor
-import optimizationV7.OptimizationV7Actor
+import optimizationV4.OptimizationV4Actor
+import optimizationV5.OptimizationV5Actor
 import util.TimerActor
 import util.TimerActor.{Start, TotalCount}
 
@@ -24,8 +24,8 @@ object Launcher {
     //optimizationV1
     //optimizationV2
     //optimizationV3
-    optimizationV4
-    //optimizationV5
+    //optimizationV4
+    optimizationV5
   }
 
   def blocking = {
@@ -52,7 +52,7 @@ object Launcher {
     val conf = ConfigFactory.parseFile(new File(confPath))
     val system = ActorSystem("d", conf)
     val jobActor = system.actorOf(RoundRobinPool(10).props(Props(classOf[BlockingJobActor], cpuTaskCount, nonBlockingTaskCount)/*.withDispatcher("akka.actor.blocking-io-dispatcher")*/), "optimizationV2-actor")
-    doIt(jobActor, system, "optimizationV2")
+    doIt(jobActor, system, "optimizationV4")
   }
 
   def optimizationV3 = {
@@ -69,17 +69,17 @@ object Launcher {
     val confPath = "/Users/deanzhang/work/code/github/akka-dispatcher-test/conf/optimizationV4.conf"
     val conf = ConfigFactory.parseFile(new File(confPath))
     val system = ActorSystem("d", conf)
-    val jobActor = system.actorOf(Props(classOf[OptimizationV2Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV4-actor")
+    val jobActor = system.actorOf(Props(classOf[OptimizationV4Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV4-actor")
     doIt(jobActor, system, "optimizationV4")
   }
 
   def optimizationV5 = {
-    println("start optimizationV7")
+    println("start optimizationV5")
     val confPath = "/Users/deanzhang/work/code/github/akka-dispatcher-test/conf/optimizationV4.conf"
     val conf = ConfigFactory.parseFile(new File(confPath))
     val system = ActorSystem("d", conf)
-    val jobActor = system.actorOf(Props(classOf[OptimizationV7Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV7-actor")
-    doIt(jobActor, system, "optimizationV7")
+    val jobActor = system.actorOf(Props(classOf[OptimizationV5Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV5-actor")
+    doIt(jobActor, system, "optimizationV5")
   }
 
   def doIt(jobActor: ActorRef, system: ActorSystem, name: String): Unit = {

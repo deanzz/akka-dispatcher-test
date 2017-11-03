@@ -1,4 +1,4 @@
-package optimizationV2
+package optimizationV4
 
 import akka.actor.{Actor, Props}
 import blocking.BlockingJobActor.NewJob
@@ -12,7 +12,7 @@ import util.TimerActor.Finish
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
-class OptimizationV2Actor(cpuTaskCount: Int, nonBlockingTaskCount: Int) extends Actor {
+class OptimizationV4Actor(cpuTaskCount: Int, nonBlockingTaskCount: Int) extends Actor {
   private val dao = new BlockingDao
   private val cpuWorker = new BlockingCPUWorker
   private val nonBlockingActor = context.actorOf(Props[NonBlockingJobActor], "non-blocking-actor")
@@ -55,7 +55,7 @@ class OptimizationV2Actor(cpuTaskCount: Int, nonBlockingTaskCount: Int) extends 
   }
 }
 
-object OptimizationV2Actor {
+object OptimizationV4Actor {
 
   case class NewJob(info: String)
 
