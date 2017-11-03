@@ -708,5 +708,13 @@ val jobActor = system.actorOf(Props(classOf[OptimizationV5Actor], cpuTaskCount, 
 ![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v5.png)
 
 #### 总结<br/>
-这种方案的性能与优化方案4的性能相当，因为同样采用了资源隔离和Future的方案，但是这种方案更符合actor的思维模式，也是最为推荐的方式。
+这种方案的性能与优化方案4的性能相当，因为同样采用了资源隔离和Future的方案，但是这种方案更符合actor的思维模式，也是最为推荐的方式。<br/>
+
+## 最后
+请大家牢记在使用akka-actor时，<br/>
+1. 尽量使用Future和资源隔离的方案以完成一个非阻塞、异步的系统
+2. 尽量避免在actor中使用阻塞IO的的技术，比如数据库驱动，尽量选择非阻塞数据库驱动
+3. 尽量避免写出阻塞IO的代码，比如使用Await.result或Await.ready阻塞线程，除非你的场景不得不这样做
+
+
 
