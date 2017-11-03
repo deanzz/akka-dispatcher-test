@@ -148,9 +148,9 @@ akka.actor{
 
 #### 总结<br/>
 从日志和线程使用情况看可以看出，除去akka内部用于发消息用的调度器线程d-scheduler-1，<br/>
-干活的线程就两个，d-akka.actor.default-dispatcher-2、d-akka.actor.default-dispatcher-3和d-akka.actor.default-dispatcher-4，<br/>
+干活的线程就3个，d-akka.actor.default-dispatcher-2、d-akka.actor.default-dispatcher-3和d-akka.actor.default-dispatcher-4，<br/>
 d-akka.actor.default-dispatcher-2、3承担了内存中查询结果的工作，由于是非阻塞IO的任务，经常在等待同步任务，所以经常处在等待的状态<br/>
-d-akka.actor.default-despatcher-4承担了查询数据库和跑算法的工作，查询数据库是阻塞IO的任务，所以线程在此期间会处于等待状态；跑算法的任务时cpu密集型任务，所以线程在此期间是运行状态。<br/>
+d-akka.actor.default-despatcher-4承担了查询数据库和跑算法的工作，查询数据库是阻塞IO的任务，所以线程在此期间会处于等待状态；跑算法的任务是cpu密集型任务，所以线程在此期间是运行状态。<br/>
 由于BlockingJobActor中代码的写法完全是同步方式，导致耗时的工作都放在一个线程上同步执行，浪费了剩余7个线程（配置的10个线程-使用的3个线程），所以延迟很高，吞吐量很低。
 
 ## 优化方案1
@@ -321,7 +321,7 @@ Router中的10个actor都在工作了，default-dispatcher中的10个线程也�
 同样本不用依赖其他任务的非阻塞内存查询操作，被阻塞住了。
 
 ## 优化方案3
-我们还可以使用Router的BalancingPool的策略。
+我们还可以使用Router的BalancingPool的策略，来增加干活的actor的数量。
 
 #### 优化的代码
 1. Launcher.optimizationV3
