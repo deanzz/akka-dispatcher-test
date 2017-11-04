@@ -1,33 +1,38 @@
-# akka-actor之性能优化
->这次给大家分享一下akka-actor如何进行性能优化，以达到最大化利用单台机器上的硬件资源的目的。<br/>
+# akka-actor性能优化之单机版
+>这次给大家分享一下akka-actor如何在单台机器上进行性能优化，以达到最大化利用单台机器上的硬件资源的目的。<br/>
 当今，处理器早已步入多核时代。<br/>
 所以要最大化利用单台机器上的硬件资源，其中很重要的一点就是要充分利用线程异步完成任务，<br/>
-即创造一个非阻塞、异步的消息驱动系统。<br/>
+使用akka可以创造一个非阻塞、异步的消息驱动系统。<br/>
 
 ## 基础知识
 
-###### Dispatcher是什么？<br/>
+###### Dispatcher是什么？
 Dispatcher是一个执行上下文，actor中的任务都会交由Dispatcher去执行，Dispatcher将如何执行任务与何时运行任务两者解耦。<br/>
 大家也可以先简单把Dispatcher看成一个可执行任务的线程池。<br/>
-###### ExecutionContext是什么？<br/>
-scala.concurrent.ExecutionContext，是scala中Future的可执行上下文，大家可以把Dispatcher和ExecutionContext看成是一个东西，Dispatcher继承了ExecutionContext，他们的作用相同。<br/>
-###### Router是什么？<br/>
-Router是akka中一个用于负载均衡和路由的抽象。<br/>
+代码中，通过ActorSystem.dispatcher可以得到默认的dispatcher（配置文件中default-dispatcher），<br/>
+通过ActorSystem.dispatchers.lookup可以获取在配置文件中自定义的dispatcher
+###### ExecutionContext是什么？
+scala.concurrent.ExecutionContext，是scala中Future的可执行上下文，大家可以把Dispatcher和ExecutionContext看成是一个东西，Dispatcher继承了ExecutionContext，<br/>
+给Future传递ExecutionContext时可直接将dispatcher传入。
+###### Router是什么？
+Router是akka中一个用于负载均衡和路由的抽象，Router会创建多个actor实例一起完成任务。<br/>
 Router有很多种，今天我们会涉及到的是RoundRobinPool和BalancingPool。<br/>
 RoundRobinPool:<br/>
 这种路由的策略是会依次向Pool中的各个节点发送消息，循环往复。<br/>
 BalancingPool:<br/>
 BalancingPool这个路由策略有点特殊。只可以用于本地Actor。多个Actor共享同一个邮箱，一有空闲就处理邮箱中的任务。这种策略可以确保所有Actor都处于繁忙状态。对于本地集群来说，经常会优先选择这个路由策略。
-###### Pipe是什么？<br/>
+###### Pipe是什么？
 Pipe是一种消息传递方式，它接受Future的结果作为参数，然后将其传递给所提供的Actor引用，<br/>
 比如：pipe(future) to sender()
      
 ## 一个糟糕的例子
 我们从一个用akka-actor写的糟糕的例子开始我们的优化之旅。<br/>
-假设我们想完成这样一些工作:
-1. 查询`1次`数据库获取数据，显示结果（阻塞IO操作）
-2. 跑`2个`计算量较大的算法，显示结果（cpu密集型操作）
-3. 内存中查询`40次`结果，并显示（非阻塞IO操作）<br/>
+假设我们在1个流程中想完成这样的工作:
+1. 查询`1次`数据库获取数据，显示结果（阻塞IO任务）
+2. 跑`2次`计算量较大的算法，显示结果（cpu密集型任务）
+3. 内存中查询`40次`结果，并显示（非阻塞IO任务）<br/>
+
+我们会测试50个这样的流程，也就是说，阻塞IO任务执行50次，cpu密集型任务执行100次，非阻塞IO任务执行2000次。<br/>
 
 根据需求我们写出了如下几个类：
 
@@ -42,7 +47,7 @@ Pipe是一种消息传递方式，它接受Future的结果作为参数，然后�
 #### 主要代码<br/>
 具体内容可阅读代码中blocking包的内容。
 1. BlockingJobActor<br/>
-按照常规逻辑，<br/>
+按照常规逻辑，可以通过最简单的同步串行方式实现，<br/>
 首先调用dao.findByKey(info)查询数据库获取结果，并显示结果；<br/>
 然后调用几次cpuWorker.compute(100)跑计算量较大的算法，并显示结果；<br/>
 最后请求内存中查询一些结果，并显示。
@@ -72,7 +77,8 @@ override def receive: Receive = {
   }
 ```
 
-2. NonBlockingJobActor
+2. NonBlockingJobActor<br/>
+非阻塞任务内存查询的逻辑。
 ```scala
 override def receive: Receive = {
     case NonBlockingJobReq(info) =>
@@ -82,7 +88,8 @@ override def receive: Receive = {
   }
 ```
 
-3. blocking.conf
+3. blocking.conf<br/>
+这里配置了默认的dispatcher，这里配置了10个线程。
 ```text
 akka.actor{
   default-dispatcher{
@@ -142,7 +149,7 @@ akka.actor{
 
 ![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/blocking.png)
 
-黄色代表等待<br/>
+黄色代表等待，线程真正等待或在模拟阻塞IO数据库查询的操作时，使用Thread.sleep时都会显示为此状态<br/>
 绿色代表运行<br/>
 红色代表阻塞<br/>
 
@@ -150,7 +157,7 @@ akka.actor{
 从日志和线程使用情况看可以看出，除去akka内部用于发消息用的调度器线程d-scheduler-1，<br/>
 干活的线程就3个，d-akka.actor.default-dispatcher-2、d-akka.actor.default-dispatcher-3和d-akka.actor.default-dispatcher-4，<br/>
 d-akka.actor.default-dispatcher-2、3承担了内存中查询结果的工作，由于是非阻塞IO的任务，经常在等待同步任务，所以经常处在等待的状态<br/>
-d-akka.actor.default-despatcher-4承担了查询数据库和跑算法的工作，查询数据库是阻塞IO的任务，所以线程在此期间会处于等待状态；跑算法的任务是cpu密集型任务，所以线程在此期间是运行状态。<br/>
+d-akka.actor.default-dispatcher-4承担了查询数据库和跑算法的工作，查询数据库是阻塞IO的任务，所以线程在此期间会处于等待状态；跑算法的任务是cpu密集型任务，所以线程在此期间是运行状态。<br/>
 由于BlockingJobActor中代码的写法完全是同步方式，导致耗时的工作都放在一个线程上同步执行，浪费了剩余7个线程（配置的10个线程-使用的3个线程），所以延迟很高，吞吐量很低。
 
 ## 优化方案1
@@ -710,11 +717,85 @@ val jobActor = system.actorOf(Props(classOf[OptimizationV5Actor], cpuTaskCount, 
 #### 总结<br/>
 这种方案的性能与优化方案4的性能相当，因为同样采用了资源隔离和Future的方案，但是这种方案更符合actor的思维模式，也是最为推荐的方式。<br/>
 
+## 优化方案6
+还有没有更快的方案呢？答案是肯定的，我们可以在资源隔离和Future的方案基础上，加入Router来继续提高性能。
+
+#### 优化的代码
+1. Launcher.optimizationV6<br/>
+这里jobActor使用优化方案4或5中的actor没有区别，本质都是资源隔离+Future，<br/>
+Router使用BalancingPool和RoundRobinPool在本测试中效果一样，不过理论应该是BalancingPool更好一些，不过这也与dispatcher的配置有关。
+```scala
+val jobActor = system.actorOf(BalancingPool(10).props(Props(classOf[OptimizationV4Actor/*OptimizationV5Actor*/], cpuTaskCount, nonBlockingTaskCount)), "optimizationV6-actor")
+//val jobActor = system.actorOf(RoundRobinPool(10).props(Props(classOf[OptimizationV4Actor/*OptimizationV5Actor*/], cpuTaskCount, nonBlockingTaskCount)), "optimizationV6-actor")
+```
+#### 日志及线程的使用情况<br/>
+执行时间：约40秒<br/>
+日志：<br/>
+```text
+11:27:15: d-akka.actor.blocking-io-dispatcher-26, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.blocking-io-dispatcher-25, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.blocking-io-dispatcher-24, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.cpu-work-dispatcher-34, start compute(100)
+11:27:15: d-akka.actor.blocking-io-dispatcher-29, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.blocking-io-dispatcher-21, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.cpu-work-dispatcher-47, start compute(100)
+11:27:15: d-akka.actor.cpu-work-dispatcher-42, start compute(100)
+11:27:15: d-akka.actor.cpu-work-dispatcher-43, start compute(100)
+11:27:15: d-akka.actor.blocking-io-dispatcher-28, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.blocking-io-dispatcher-50, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.blocking-io-dispatcher-27, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.cpu-work-dispatcher-46, start compute(100)
+11:27:15: d-akka.actor.default-dispatcher-14, NonBlockingJobReq(independent of any result)
+11:27:15: d-akka.actor.default-dispatcher-17, NonBlockingJobReq(independent of any result)
+11:27:15: d-akka.actor.default-dispatcher-16, NonBlockingJobReq(independent of any result)
+11:27:15: d-akka.actor.cpu-work-dispatcher-40, start compute(100)
+11:27:15: d-akka.actor.blocking-io-dispatcher-23, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.blocking-io-dispatcher-31, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.default-dispatcher-15, NonBlockingJobReq(independent of any result)
+11:27:15: d-akka.actor.cpu-work-dispatcher-37, start compute(100)
+11:27:15: d-akka.actor.cpu-work-dispatcher-48, start compute(100)
+11:27:15: d-akka.actor.cpu-work-dispatcher-45, start compute(100)
+11:27:15: d-akka.actor.cpu-work-dispatcher-38, start compute(100)
+11:27:15: d-akka.actor.cpu-work-dispatcher-41, start compute(100)
+11:27:15: d-akka.actor.cpu-work-dispatcher-36, start compute(100)
+11:27:15: d-akka.actor.blocking-io-dispatcher-33, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.blocking-io-dispatcher-32, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.cpu-work-dispatcher-44, start compute(100)
+11:27:15: d-akka.actor.cpu-work-dispatcher-39, start compute(100)
+11:27:15: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(independent of any result)
+11:27:15: d-akka.actor.blocking-io-dispatcher-49, start findByKey(optimizationV6-job)
+11:27:15: d-akka.actor.default-dispatcher-20, NonBlockingJobReq(independent of any result)
+11:27:15: d-akka.actor.default-dispatcher-3, NonBlockingJobReq(independent of any result)
+11:27:15: d-BalancingPool-/optimizationV6-actor-6, NonBlockingJobResp(INDEPENDENT OF ANY RESULT)
+11:27:15: d-akka.actor.default-dispatcher-15, NonBlockingJobReq(independent of any result)
+11:27:15: d-akka.actor.default-dispatcher-16, NonBlockingJobReq(independent of any result)
+11:27:15: d-BalancingPool-/optimizationV6-actor-19, NonBlockingJobResp(INDEPENDENT OF ANY RESULT)
+11:27:15: d-BalancingPool-/optimizationV6-actor-6, NonBlockingJobResp(INDEPENDENT OF ANY RESULT)
+...
+11:27:51: d-akka.actor.default-dispatcher-4, NonBlockingJobReq(17608292)
+11:27:51: d-BalancingPool-/optimizationV6-actor-12, NonBlockingJobResp(17608292)
+11:27:55: d-akka.actor.default-dispatcher-4, NonBlockingJobReq(db result is optimizationV6-job)
+11:27:55: d-akka.actor.default-dispatcher-13, NonBlockingJobReq(db result is optimizationV6-job)
+11:27:55: d-akka.actor.default-dispatcher-13, NonBlockingJobReq(db result is optimizationV6-job)
+11:27:55: d-BalancingPool-/optimizationV6-actor-10, NonBlockingJobResp(DB RESULT IS OPTIMIZATIONV6-JOB)
+11:27:55: d-BalancingPool-/optimizationV6-actor-12, NonBlockingJobResp(DB RESULT IS OPTIMIZATIONV6-JOB)
+```
+
+线程使用情况：<br/>
+
+![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v6-1.png)
+![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v6-2.png)
+
+#### 总结
+通过加入Router，我们增加了可以同时干活的actor实例，结合Future和资源隔离，性能又提高了不少，棒棒的。
+
 ## 最后
-请大家牢记在使用akka-actor时，<br/>
-1. 尽量使用Future和资源隔离的方案以完成一个非阻塞、异步的系统
-2. 尽量避免在actor中使用阻塞IO的的技术，比如数据库驱动，尽量选择非阻塞数据库驱动
-3. 尽量避免写出阻塞IO的代码，比如使用Await.result或Await.ready阻塞线程，除非你的场景不得不这样做
-
-
+通过上面的优化过程，我们从最初糟糕的同步方案开始，<br/>
+执行时间从"未完成"开始，优化到136秒，优化到120秒，优化到105秒，优化到50秒，最后优化到40秒，<br/>
+cpu使用率也从最初的不到5%提高到大于95%，<br/>
+这是一个从同步到异步的过程。
+最后请大家在使用akka-actor时牢记，<br/>
+1. 尽量避免在actor中使用阻塞IO的的技术，比如数据库驱动，尽量选择非阻塞数据库驱动
+2. 尽量避免写出阻塞IO的代码，比如使用Await.result或Await.ready阻塞线程，除非你的场景不得不这样做
+3. 推荐使用Future+资源隔离的方案再配合Router以完成一个非阻塞、异步的系统
 

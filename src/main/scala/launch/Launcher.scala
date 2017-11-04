@@ -25,7 +25,8 @@ object Launcher {
     //optimizationV2
     //optimizationV3
     //optimizationV4
-    optimizationV5
+    //optimizationV5
+    optimizationV6
   }
 
   def blocking = {
@@ -80,6 +81,17 @@ object Launcher {
     val system = ActorSystem("d", conf)
     val jobActor = system.actorOf(Props(classOf[OptimizationV5Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV5-actor")
     doIt(jobActor, system, "optimizationV5")
+  }
+
+  def optimizationV6 = {
+    println("start optimizationV6")
+    val confPath = "/Users/deanzhang/work/code/github/akka-dispatcher-test/conf/optimizationV4.conf"
+    val conf = ConfigFactory.parseFile(new File(confPath))
+    val system = ActorSystem("d", conf)
+    val jobActor = system.actorOf(BalancingPool(10).props(Props(classOf[OptimizationV4Actor/*OptimizationV5Actor*/], cpuTaskCount, nonBlockingTaskCount)), "optimizationV6-actor")
+    //val jobActor = system.actorOf(RoundRobinPool(10).props(Props(classOf[OptimizationV4Actor/*OptimizationV5Actor*/], cpuTaskCount, nonBlockingTaskCount)), "optimizationV6-actor")
+
+    doIt(jobActor, system, "optimizationV6")
   }
 
   def doIt(jobActor: ActorRef, system: ActorSystem, name: String): Unit = {
