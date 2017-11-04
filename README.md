@@ -787,7 +787,7 @@ val jobActor = system.actorOf(BalancingPool(10).props(Props(classOf[Optimization
 ![线程使用情况](https://raw.githubusercontent.com/deanzz/akka-dispatcher-test/master/pic/v6-2.png)
 
 #### 总结
-通过加入Router，我们增加了可以同时干活的actor实例，结合Future和资源隔离，性能又提高了不少，棒棒的。
+通过加入Router，我们增加了可以同时干活的actor实例，结合Future和资源隔离，性能又提高了不少。
 
 ## 最后
 通过上面的优化过程，我们从最初糟糕的同步方案开始，<br/>
