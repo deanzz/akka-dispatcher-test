@@ -501,6 +501,9 @@ akka.actor{
 
 2. OptimizationV4Actor
 ```scala
+private val blockingExecutionContext = context.system.dispatchers.lookup("akka.actor.blocking-io-dispatcher")
+private val cpuExecutionContext = context.system.dispatchers.lookup("akka.actor.cpu-work-dispatcher")
+
 override def receive: Receive = {
     case NewJob(info) =>
       // some blocking IO operation
@@ -538,7 +541,7 @@ override def receive: Receive = {
 
 3. Launcher.optimizationV4
 ```scala
-val jobActor = system.actorOf(Props(classOf[OptimizationV2Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV4-actor")
+val jobActor = system.actorOf(Props(classOf[OptimizationV4Actor], cpuTaskCount, nonBlockingTaskCount), "optimizationV4-actor")
 ```
 
 #### 日志及线程的使用情况<br/>
@@ -602,7 +605,7 @@ val jobActor = system.actorOf(Props(classOf[OptimizationV2Actor], cpuTaskCount, 
 #### 总结<br/>
 我们重新启用了Future，并将数据库查询任务分离到名叫blocking-io-dispatcher的dispatcher，<br/>
 将跑算法的任务分离到名叫cpu-work-dispatcher的dispatcher，默认的default-dispatcher用来跑非阻塞的任务，<br/>
-资源隔离减少了不同种类任务资源的竞争，可以确保应用程序在糟糕的情况下仍然能够有资源去运行其他任务，保证应用程序的其他部分还是能够迅速地做出响应。
+资源隔离减少了不同种类任务资源的竞争，一方面可以保证各类任务不会互相影响，提高运行速度，一方面可以确保应用程序在糟糕的情况下仍然能够有资源去运行其他任务，保证应用程序的其他部分还是能够迅速地做出响应。
          
 ## 优化方案5
 接下来我们还沿用资源隔离的方案，但是完全采用actor模型的设计模式，即万物都为actor，所以数据库查询任务抽象到DaoActor，跑算法抽象到CPUWorkerActor,<br/>
@@ -638,6 +641,8 @@ override def receive: Receive = {
 
 2. DaoActor
 ```scala
+private implicit val blockingExecutionContext = context.system.dispatchers.lookup("akka.actor.blocking-io-dispatcher")
+
 override def receive: Receive = {
     case FindByKey(key) =>
       val future = Future(FindByKeyResult(findByKey(key)))
@@ -647,6 +652,8 @@ override def receive: Receive = {
 
 3. CPUWorkerActor
 ```scala
+private implicit val cpuExecutionContext = context.system.dispatchers.lookup("akka.actor.cpu-work-dispatcher")
+
 override def receive: Receive = {
     case Compute(n) =>
       val future = Future(ComputeResult(compute(n)))

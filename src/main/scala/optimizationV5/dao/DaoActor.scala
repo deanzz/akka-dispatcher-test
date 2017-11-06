@@ -8,7 +8,7 @@ import akka.pattern.pipe
 import scala.concurrent.Future
 
 class DaoActor extends Actor {
-  implicit val blockingExecutionContext = context.system.dispatchers.lookup("akka.actor.blocking-io-dispatcher")
+  private implicit val blockingExecutionContext = context.system.dispatchers.lookup("akka.actor.blocking-io-dispatcher")
 
   override def receive: Receive = {
     case FindByKey(key) =>
